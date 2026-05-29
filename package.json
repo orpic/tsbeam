@@ -1,0 +1,20 @@
+{
+  "name": "tsbeam",
+  "version": "0.0.1",
+  "description": "TypeScript-to-BEAM compiler",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "tsbeam": "dist/src/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "tsbeam": "tsc && node dist/src/cli/index.js",
+    "test": "tsc && node dist/tests/run.js",
+    "test:update": "tsc && node dist/tests/run.js --update"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0"
+  }
+}

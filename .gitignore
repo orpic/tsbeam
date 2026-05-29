@@ -1,0 +1,39 @@
+# dependencies
+node_modules/
+
+# our compiler's TypeScript output (tsc emits here)
+dist/
+
+# tsbeam compilation artifacts: any .beam / .core / build dir produced by
+# running the compiler. The compiler default is `./build/` in the user's CWD;
+# test runs write to `tests/.build/<case>/`.
+build/
+tests/.build/
+*.beam
+*.core
+
+# editor & OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
+.history/
+
+# AI agents & assistants (local session state, not project artifacts)
+.claude/
+.cursor/
+.aider*
+.continue/
+.windsurf/
+
+# logs & diagnostics
+*.log
+npm-debug.log*
+.erlang.cookie
+
+# typescript incremental build info
+*.tsbuildinfo
+
+# private working docs (not for public repo)
+plan.md
