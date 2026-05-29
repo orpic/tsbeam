@@ -1,0 +1,12 @@
+function classify(n: number): number {
+  if (n < 0) {
+    return -1
+  }
+  if (n === 0) {
+    return 0
+  }
+  return n * 2
+}
+console.log(classify(-5))
+console.log(classify(0))
+console.log(classify(7))

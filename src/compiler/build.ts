@@ -3,6 +3,7 @@ import * as path from "node:path"
 import * as fs from "node:fs"
 import { spawnSync } from "node:child_process"
 import { emitCoreErlang } from "./emitter.js"
+import { lower } from "./lower/index.js"
 
 export interface BuildOptions {
   outDir?: string
@@ -44,7 +45,8 @@ export function build(tsPath: string, opts: BuildOptions = {}): BuildResult {
   fs.mkdirSync(outDir, { recursive: true })
 
   const sourceFile = parseSourceFile(absolute)
-  const { source } = emitCoreErlang(sourceFile, moduleName)
+  const lowered = lower(sourceFile)
+  const { source } = emitCoreErlang(lowered, moduleName)
 
   const corePath = path.join(outDir, `${moduleName}.core`)
   fs.writeFileSync(corePath, source, "utf8")

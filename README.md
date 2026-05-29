@@ -28,6 +28,7 @@ console.log(add(1, 2))   // 3, computed on BEAM
 - Function declarations with typed parameters (`number`)
 - `let` / `const` bindings
 - `if` / `else`
+- Mid-block `return` (lowered to nested `if/else`)
 - Binary arithmetic: `+`, `-`, `*`, `/`
 - Comparisons: `==`, `===`, `!=`, `!==`, `<`, `>`, `<=`, `>=`
 - Unary `-`, `+`, `!`
@@ -37,8 +38,9 @@ console.log(add(1, 2))   // 3, computed on BEAM
 
 ### Not yet
 
-- Mid-block `return` (CPS lowering — coming next)
 - Interfaces, arrays, maps
+- Loops, `break`, `continue`
+- `try`/`catch`/`throw`
 - Concurrency, OTP
 
 ## Quick start
@@ -80,6 +82,9 @@ documented, and the same target every BEAM language uses.
 src/
   compiler/
     parser.ts     # debug: TS Compiler API → AST dump
+    lower/        # AST-to-AST rewrites before emission
+      index.ts
+      lower-early-return.ts
     emitter.ts    # AST → Core Erlang text
     build.ts      # build/run primitives (used by CLI + tests)
   cli/
