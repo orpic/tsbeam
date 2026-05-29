@@ -33,12 +33,16 @@ console.log(add(1, 2))   // 3, computed on BEAM
 - Comparisons: `==`, `===`, `!=`, `!==`, `<`, `>`, `<=`, `>=`
 - Unary `-`, `+`, `!`
 - Numeric and string literals, booleans
+- Arrays (`Array<T>` / `T[]`) — compile to BEAM tuples, O(1) read and `.length`
+- Indexed access (`arr[i]`)
 - Local function calls
 - `console.log(...)` → `io:format/2`
 
 ### Not yet
 
-- Interfaces, arrays, maps
+- Array methods (`.map`, `.filter`, `.push`, etc.)
+- Objects / interfaces
+- `Map<K,V>`, `Set<T>`
 - Loops, `break`, `continue`
 - `try`/`catch`/`throw`
 - Concurrency, OTP

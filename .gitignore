@@ -37,3 +37,9 @@ npm-debug.log*
 
 # private working docs (not for public repo)
 plan.md
+
+# local_sandbox/ — your private scratchpad inside the project.
+# Use it to hand-write Core Erlang you want to sanity-check with erlc,
+# to try TS snippets through the compiler, or to dump throwaway experiments.
+# Never committed. Safe to delete at any time.
+local_sandbox/

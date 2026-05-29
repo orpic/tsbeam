@@ -233,8 +233,50 @@ class Emitter {
     if (ts.isPrefixUnaryExpression(expr)) {
       return this.emitPrefixUnary(expr)
     }
+    if (ts.isArrayLiteralExpression(expr)) {
+      return this.emitArrayLiteral(expr)
+    }
+    if (ts.isElementAccessExpression(expr)) {
+      return this.emitElementAccess(expr)
+    }
+    if (ts.isPropertyAccessExpression(expr)) {
+      return this.emitPropertyAccess(expr)
+    }
     throw new Error(
       `unsupported expression: ${ts.SyntaxKind[expr.kind]}`,
+    )
+  }
+
+  private emitArrayLiteral(expr: ts.ArrayLiteralExpression): string {
+    const elements = expr.elements.map((e) => this.emitExpression(e))
+    return `{${elements.join(", ")}}`
+  }
+
+  private emitElementAccess(expr: ts.ElementAccessExpression): string {
+    const tuple = this.emitExpression(expr.expression)
+    const index = this.emitOneIndexedIndex(expr.argumentExpression)
+    return `call 'erlang':'element'(${index}, ${tuple})`
+  }
+
+  // TS indices are 0-based; Core Erlang `element/2` is 1-based.
+  // Constant-fold numeric literals so 0 → 1 directly instead of `0 + 1`.
+  private emitOneIndexedIndex(arg: ts.Expression): string {
+    if (ts.isNumericLiteral(arg)) {
+      const n = Number(arg.text)
+      return String(n + 1)
+    }
+    const expr = this.emitExpression(arg)
+    return `call 'erlang':'+'(${expr}, 1)`
+  }
+
+  private emitPropertyAccess(expr: ts.PropertyAccessExpression): string {
+    const name = expr.name.text
+    if (name === "length") {
+      const target = this.emitExpression(expr.expression)
+      return `call 'erlang':'tuple_size'(${target})`
+    }
+    throw new Error(
+      `unsupported property access: .${name}`,
     )
   }
 

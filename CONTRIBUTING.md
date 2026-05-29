@@ -122,17 +122,23 @@ Core Erlang reference (the source of truth for output format):
 <https://www.erlang.org/doc/apps/compiler/cerl.html>.
 
 **Useful trick when adding a feature:** before touching the emitter, write
-the Core Erlang you *want* by hand and confirm `erlc` accepts it:
+the Core Erlang you *want* by hand and confirm `erlc` accepts it. Use the
+gitignored `local_sandbox/` directory at the repo root for this — that's
+exactly what it's for.
 
 ```bash
-mkdir -p /tmp/cerl-experiment && cd /tmp/cerl-experiment
-# write foo.core
-erlc +from_core foo.core
+mkdir -p local_sandbox
+# write local_sandbox/foo.core
+cd local_sandbox && erlc +from_core foo.core
 erl -noshell -pa . -eval 'foo:main(), halt().'
 ```
 
 Once you've got a working hand-written target, mirror that shape from the
-emitter, then add a test case.
+emitter, then add a test case under `tests/cases/`.
+
+`local_sandbox/` is your private scratchpad. Nothing in it is ever
+committed; safe to delete at any time. Don't reference files in it from
+committed code or docs.
 
 ## Submitting changes
 

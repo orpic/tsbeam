@@ -75,13 +75,31 @@ tests/
 dist/             # gitignored — tsc output for OUR compiler source
 build/            # gitignored — user-facing tsbeam output (per CWD)
 tests/.build/     # gitignored — isolated build dir per test case
-plans/            # gitignored — local planning/discussion files
+local_sandbox/    # gitignored — your private scratchpad (see below)
+
+plans/            # committed — paired plan + discussion per work area
 ```
 
 **Two different "build" concepts** — don't confuse them:
 
 - `dist/` = tsc's output, our TypeScript compiler source transpiled to JS.
 - `build/` = what tsbeam emits for users compiling their `.ts` files.
+
+### `local_sandbox/` — your private scratchpad
+
+`local_sandbox/` is a gitignored directory for throwaway work inside the
+project. Use it when:
+
+- You want to hand-write a Core Erlang file and feed it through `erlc` to
+  sanity-check the shape *before* changing the emitter. This is the
+  pattern we used for CPS and arrays: target shape first, emitter second.
+- You want to run a small TS snippet through tsbeam without polluting
+  `tests/cases/`.
+- You're exploring something that isn't ready to become a real test case.
+
+Nothing in `local_sandbox/` is ever committed. Safe to delete at any time.
+Don't reference files in `local_sandbox/` from any committed code or docs
+— they may not exist in a fresh clone.
 
 ## Test cases — naming and structure
 
