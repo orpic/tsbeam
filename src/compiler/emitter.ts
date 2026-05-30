@@ -14,18 +14,49 @@ class Emitter {
   // `fun 'name'/arity` when the name is referenced as a value.
   private moduleFunctions = new Map<string, number>()
 
-  emitModule(sourceFile: ts.SourceFile, moduleName: string): ModuleOutput {
+  // interface name → ordered field names. Object literals whose contextual
+  // type matches an interface compile to tagged tuples (records), and
+  // property access on interface-typed expressions becomes element/N.
+  private interfaces = new Map<string, string[]>()
+
+  // Type checker for contextual / declared type queries. Optional; if
+  // absent, we fall back to anonymous-map emission.
+  private typeChecker: ts.TypeChecker | null = null
+
+  emitModule(
+    sourceFile: ts.SourceFile,
+    moduleName: string,
+    typeChecker: ts.TypeChecker | null = null,
+  ): ModuleOutput {
     const functions: Emitted[] = []
     const topLevelStatements: ts.Statement[] = []
 
     this.moduleFunctions.clear()
+    this.interfaces.clear()
+    this.typeChecker = typeChecker
+
     for (const stmt of sourceFile.statements) {
       if (ts.isFunctionDeclaration(stmt) && stmt.name) {
         this.moduleFunctions.set(stmt.name.text, stmt.parameters.length)
       }
+      if (ts.isInterfaceDeclaration(stmt)) {
+        const fields = stmt.members
+          .filter(ts.isPropertySignature)
+          .map((m) => {
+            if (m.name && ts.isIdentifier(m.name)) return m.name.text
+            if (m.name && ts.isStringLiteral(m.name)) return m.name.text
+            return null
+          })
+          .filter((n): n is string => n !== null)
+        this.interfaces.set(stmt.name.text, fields)
+      }
     }
 
     for (const stmt of sourceFile.statements) {
+      if (ts.isInterfaceDeclaration(stmt)) {
+        // Already collected above; skip — interfaces are compile-time only.
+        continue
+      }
       if (ts.isFunctionDeclaration(stmt) && stmt.name) {
         functions.push(this.emitFunctionDeclaration(stmt))
       } else {
@@ -227,7 +258,7 @@ class Emitter {
       return expr.text
     }
     if (ts.isStringLiteral(expr)) {
-      return JSON.stringify(expr.text)
+      return this.emitStringLiteralAsBinary(expr.text)
     }
     if (expr.kind === ts.SyntaxKind.TrueKeyword) return "'true'"
     if (expr.kind === ts.SyntaxKind.FalseKeyword) return "'false'"
@@ -269,8 +300,228 @@ class Emitter {
     if (ts.isTypeOfExpression(expr)) {
       return this.emitTypeOf(expr)
     }
+    if (ts.isObjectLiteralExpression(expr)) {
+      return this.emitObjectLiteral(expr)
+    }
+    if (ts.isNewExpression(expr)) {
+      return this.emitNewExpression(expr)
+    }
     throw new CompileError(
       `unsupported expression: ${ts.SyntaxKind[expr.kind]}`,
+    )
+  }
+
+  // Returns the interface name (e.g. "User") if `expr`'s type (declared or
+  // contextual) matches one of our collected interfaces, else null. Used to
+  // route object literals and property access through record emission.
+  private interfaceNameFor(expr: ts.Expression): string | null {
+    if (!this.typeChecker) return null
+    const type =
+      this.typeChecker.getContextualType(expr) ??
+      this.typeChecker.getTypeAtLocation(expr)
+    if (!type) return null
+    const symbol = type.aliasSymbol ?? type.symbol
+    if (!symbol) return null
+    const name = symbol.name
+    return this.interfaces.has(name) ? name : null
+  }
+
+  // Lowercase tag matching standard Erlang record convention. Two interfaces
+  // can't share a name in the same module, so collisions are impossible.
+  private recordTag(interfaceName: string): string {
+    return `'${interfaceName.toLowerCase()}'`
+  }
+
+  private emitObjectLiteral(node: ts.ObjectLiteralExpression): string {
+    const interfaceName = this.interfaceNameFor(node)
+    if (interfaceName !== null) {
+      return this.emitObjectLiteralAsRecord(node, interfaceName)
+    }
+    return this.emitObjectLiteralAsMap(node)
+  }
+
+  private emitObjectLiteralAsMap(node: ts.ObjectLiteralExpression): string {
+    // Partition properties: spreads vs assignments.
+    const spreads: ts.SpreadAssignment[] = []
+    const entries: { key: string; value: string }[] = []
+
+    for (const prop of node.properties) {
+      if (ts.isSpreadAssignment(prop)) {
+        spreads.push(prop)
+        continue
+      }
+      if (ts.isPropertyAssignment(prop)) {
+        const key = this.objectKeyToAtom(prop.name)
+        const value = this.emitExpression(prop.initializer)
+        entries.push({ key, value })
+        continue
+      }
+      if (ts.isShorthandPropertyAssignment(prop)) {
+        const name = prop.name.text
+        const key = `'${name}'`
+        const value = this.tsIdentifierToCore(name)
+        entries.push({ key, value })
+        continue
+      }
+      throw new CompileError(
+        `unsupported object property kind: ${ts.SyntaxKind[prop.kind]}`,
+      )
+    }
+
+    const pairs = entries.map((e) => `${e.key} => ${e.value}`).join(", ")
+
+    if (spreads.length === 0) {
+      return `~{ ${pairs} }~`
+    }
+    if (spreads.length > 1) {
+      throw new CompileError(
+        "object literals with multiple spreads are not supported",
+      )
+    }
+    const base = this.emitExpression(spreads[0].expression)
+    if (entries.length === 0) return base
+    return `~{ ${pairs} | ${base} }~`
+  }
+
+  // Emit object literal as a tagged-tuple record. The interface gives us
+  // field order: {Tag, F1Value, F2Value, ...}. Tag is the interface name
+  // lowercased. Spread updates compose multiple setelement calls on the
+  // base expression.
+  private emitObjectLiteralAsRecord(
+    node: ts.ObjectLiteralExpression,
+    interfaceName: string,
+  ): string {
+    const fields = this.interfaces.get(interfaceName)!
+    const tag = this.recordTag(interfaceName)
+
+    // Collect explicit field assignments and (at most one) spread base.
+    const provided = new Map<string, string>()
+    let baseExpr: string | null = null
+
+    for (const prop of node.properties) {
+      if (ts.isSpreadAssignment(prop)) {
+        if (baseExpr !== null) {
+          throw new CompileError(
+            "object literals with multiple spreads are not supported",
+          )
+        }
+        baseExpr = this.emitExpression(prop.expression)
+        continue
+      }
+      if (ts.isPropertyAssignment(prop)) {
+        const name =
+          ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)
+            ? prop.name.text
+            : null
+        if (name === null) {
+          throw new CompileError(
+            "interface-typed object literal keys must be identifiers or string literals",
+          )
+        }
+        provided.set(name, this.emitExpression(prop.initializer))
+        continue
+      }
+      if (ts.isShorthandPropertyAssignment(prop)) {
+        const name = prop.name.text
+        provided.set(name, this.tsIdentifierToCore(name))
+        continue
+      }
+      throw new CompileError(
+        `unsupported object property kind: ${ts.SyntaxKind[prop.kind]}`,
+      )
+    }
+
+    // No spread: must provide every field. Build the tuple directly.
+    if (baseExpr === null) {
+      const slots = fields.map((f) => {
+        const v = provided.get(f)
+        if (v === undefined) {
+          throw new CompileError(
+            `interface ${interfaceName} requires field '${f}' but it was not provided`,
+          )
+        }
+        return v
+      })
+      return `{${tag}, ${slots.join(", ")}}`
+    }
+
+    // Spread present: start from base, setelement for each overridden field.
+    // Slot index = 1 (tag) + (field-index-in-interface + 1) = fieldIndex + 2.
+    let acc = baseExpr
+    for (const [fieldName, value] of provided.entries()) {
+      const idx = fields.indexOf(fieldName)
+      if (idx === -1) {
+        throw new CompileError(
+          `interface ${interfaceName} has no field '${fieldName}'`,
+        )
+      }
+      const slot = idx + 2
+      acc = `call 'erlang':'setelement'(${slot}, ${acc}, ${value})`
+    }
+    return acc
+  }
+
+  private objectKeyToAtom(name: ts.PropertyName): string {
+    if (ts.isIdentifier(name)) return `'${name.text}'`
+    if (ts.isStringLiteral(name)) return `'${name.text}'`
+    if (ts.isNumericLiteral(name)) return name.text
+    throw new CompileError(
+      `unsupported object key kind: ${ts.SyntaxKind[name.kind]}`,
+    )
+  }
+
+  private emitNewExpression(node: ts.NewExpression): string {
+    if (!ts.isIdentifier(node.expression)) {
+      throw new CompileError(
+        "only `new Identifier(...)` is supported (e.g. new Map(), new Set())",
+      )
+    }
+    const ctor = node.expression.text
+    const args = node.arguments ?? ts.factory.createNodeArray()
+
+    if (ctor === "Map") {
+      // new Map() | new Map([[k, v], ...])
+      if (args.length === 0) return `~{ }~`
+      if (args.length !== 1 || !ts.isArrayLiteralExpression(args[0])) {
+        throw new CompileError(
+          "new Map(...) requires zero arguments or an array literal of [key, value] pairs",
+        )
+      }
+      const pairs: string[] = []
+      for (const el of args[0].elements) {
+        if (
+          !ts.isArrayLiteralExpression(el) ||
+          el.elements.length !== 2
+        ) {
+          throw new CompileError(
+            "new Map(...) entries must be two-element array literals: [key, value]",
+          )
+        }
+        const k = this.emitExpression(el.elements[0])
+        const v = this.emitExpression(el.elements[1])
+        pairs.push(`{${k}, ${v}}`)
+      }
+      return `call 'maps':'from_list'([${pairs.join(", ")}])`
+    }
+
+    if (ctor === "Set") {
+      // new Set() | new Set([1, 2, 3])
+      if (args.length === 0) return `~{ }~`
+      if (args.length !== 1 || !ts.isArrayLiteralExpression(args[0])) {
+        throw new CompileError(
+          "new Set(...) requires zero arguments or an array literal of values",
+        )
+      }
+      const pairs: string[] = []
+      for (const el of args[0].elements) {
+        const v = this.emitExpression(el)
+        pairs.push(`{${v}, 'true'}`)
+      }
+      return `call 'maps':'from_list'([${pairs.join(", ")}])`
+    }
+
+    throw new CompileError(
+      `unsupported constructor: new ${ctor}() — only Map and Set are supported`,
     )
   }
 
@@ -280,14 +531,19 @@ class Emitter {
   // total even when no type matches (e.g. atoms not yet covered).
   private emitTypeOf(expr: ts.TypeOfExpression): string {
     const operand = this.emitExpression(expr.expression)
+    // Returns BEAM binaries to match our string representation.
+    const numberBin = this.emitStringLiteralAsBinary("number")
+    const booleanBin = this.emitStringLiteralAsBinary("boolean")
+    const stringBin = this.emitStringLiteralAsBinary("string")
+    const objectBin = this.emitStringLiteralAsBinary("object")
     return [
       `case ${operand} of`,
-      `  _V when call 'erlang':'is_integer'(_V) -> "number"`,
-      `  _V when call 'erlang':'is_float'(_V) -> "number"`,
-      `  _V when call 'erlang':'is_boolean'(_V) -> "boolean"`,
-      `  _V when call 'erlang':'is_list'(_V) -> "string"`,
-      `  _V when call 'erlang':'is_tuple'(_V) -> "object"`,
-      `  _V when 'true' -> "object"`,
+      `  _V when call 'erlang':'is_integer'(_V) -> ${numberBin}`,
+      `  _V when call 'erlang':'is_float'(_V) -> ${numberBin}`,
+      `  _V when call 'erlang':'is_boolean'(_V) -> ${booleanBin}`,
+      `  _V when call 'erlang':'is_binary'(_V) -> ${stringBin}`,
+      `  _V when call 'erlang':'is_tuple'(_V) -> ${objectBin}`,
+      `  _V when 'true' -> ${objectBin}`,
       `end`,
     ].join("\n")
   }
@@ -306,6 +562,13 @@ class Emitter {
   }
 
   private emitElementAccess(expr: ts.ElementAccessExpression): string {
+    // String indexing: s[i] returns a one-byte binary (matches TS's
+    // one-character-string semantics) via binary:part/3.
+    if (this.isStringType(expr.expression)) {
+      const target = this.emitExpression(expr.expression)
+      const index = this.emitExpression(expr.argumentExpression)
+      return `call 'binary':'part'(${target}, ${index}, 1)`
+    }
     const tuple = this.emitExpression(expr.expression)
     const index = this.emitOneIndexedIndex(expr.argumentExpression)
     return `call 'erlang':'element'(${index}, ${tuple})`
@@ -324,13 +587,34 @@ class Emitter {
 
   private emitPropertyAccess(expr: ts.PropertyAccessExpression): string {
     const name = expr.name.text
+    // Interface-typed receiver: field access goes through element/N on the
+    // tagged-tuple record. Slot = fieldIndex + 2 (slot 1 is the tag).
+    const interfaceName = this.interfaceNameFor(expr.expression)
+    if (interfaceName !== null) {
+      const fields = this.interfaces.get(interfaceName)!
+      const idx = fields.indexOf(name)
+      if (idx !== -1) {
+        const target = this.emitExpression(expr.expression)
+        return `call 'erlang':'element'(${idx + 2}, ${target})`
+      }
+      // Field not in the interface — fall through to map access. Lets
+      // generic methods like .size work even on interface-typed values.
+    }
+    const target = this.emitExpression(expr.expression)
+    // `.length` on a string-typed value → byte_size on its binary form.
+    // On a tuple (arrays) → tuple_size.
     if (name === "length") {
-      const target = this.emitExpression(expr.expression)
+      if (this.isStringType(expr.expression)) {
+        return `call 'erlang':'byte_size'(${target})`
+      }
       return `call 'erlang':'tuple_size'(${target})`
     }
-    throw new CompileError(
-      `unsupported property access: .${name}`,
-    )
+    // `.size` is the Map/Set property; lowers to maps:size.
+    if (name === "size") {
+      return `call 'maps':'size'(${target})`
+    }
+    // Default: anonymous-map field access. Atom-keyed lookup.
+    return `call 'maps':'get'('${name}', ${target})`
   }
 
   private emitPrefixUnary(expr: ts.PrefixUnaryExpression): string {
@@ -357,6 +641,16 @@ class Emitter {
       throw new CompileError(
         "arr[i] = x is not supported — TSBeam arrays are immutable. Build a new array with the change applied (array spread coming soon).",
       )
+    }
+    // String concatenation: when either operand is string-typed, the +
+    // operator builds a new binary instead of doing integer addition.
+    if (
+      expr.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+      (this.isStringType(expr.left) || this.isStringType(expr.right))
+    ) {
+      const left = this.emitExpression(expr.left)
+      const right = this.emitExpression(expr.right)
+      return this.emitBinaryConcat(left, right)
     }
     const op = this.binaryOpToErlang(expr.operatorToken.kind)
     const left = this.emitExpression(expr.left)
@@ -450,6 +744,10 @@ class Emitter {
         "arr.shift() is not supported — TSBeam arrays are immutable. Build a new array without the first element (spread support coming soon).",
       unshift:
         "arr.unshift(x) is not supported — TSBeam arrays are immutable. Use [x, ...arr] (array spread coming soon).",
+      set:
+        "map.set(k, v) is not supported — TSBeam values are immutable. Build a new map: const m2 = {...m, [k]: v}.",
+      add:
+        "set.add(x) is not supported — TSBeam values are immutable. Build a new set from an array of values, or use a map with `true` values.",
     }
     if (methodName in mutatorMessages) {
       throw new CompileError(mutatorMessages[methodName])
@@ -493,6 +791,34 @@ class Emitter {
         }
         const target = this.emitExpression(args[0])
         return this.emitIndexOf(receiver, target)
+      }
+      case "get": {
+        // map.get(k) — returns undefined atom on miss, matching TS semantics
+        if (args.length !== 1) {
+          throw new CompileError(
+            `map.get expects exactly 1 argument (the key); got ${args.length}`,
+          )
+        }
+        const key = this.emitExpression(args[0])
+        return `call 'maps':'get'(${key}, ${receiver}, 'undefined')`
+      }
+      case "has": {
+        if (args.length !== 1) {
+          throw new CompileError(
+            `.has expects exactly 1 argument (the key/value); got ${args.length}`,
+          )
+        }
+        const key = this.emitExpression(args[0])
+        return `call 'maps':'is_key'(${key}, ${receiver})`
+      }
+      case "delete": {
+        if (args.length !== 1) {
+          throw new CompileError(
+            `.delete expects exactly 1 argument (the key); got ${args.length}`,
+          )
+        }
+        const key = this.emitExpression(args[0])
+        return `call 'maps':'remove'(${key}, ${receiver})`
       }
     }
 
@@ -544,6 +870,46 @@ class Emitter {
     return `_${name}`
   }
 
+  // Emit a string literal as a BEAM binary using Core Erlang's verbose
+  // binary-segment syntax. Each character becomes one byte segment.
+  // The high-level <<"hello">> shorthand is NOT accepted by erlc +from_core
+  // at this level — we have to use the canonical form.
+  private emitStringLiteralAsBinary(text: string): string {
+    if (text.length === 0) return `#{}#`
+    const segments = []
+    for (const ch of text) {
+      // Treat each codepoint < 256 as one byte. Multi-byte (UTF-8) chars
+      // become multiple segments via TextEncoder.
+      for (const byte of new TextEncoder().encode(ch)) {
+        segments.push(
+          `#<${byte}>(8, 1, 'integer', ['unsigned', 'big'])`,
+        )
+      }
+    }
+    return `#{${segments.join(", ")}}#`
+  }
+
+  // Concatenate two emitted binary expressions into one. Both operands
+  // must already be binaries; for string-typed values from emitExpression
+  // that's guaranteed.
+  private emitBinaryConcat(left: string, right: string): string {
+    return [
+      `#{`,
+      `  #<${left}>('all', 8, 'binary', ['unsigned', 'big']),`,
+      `  #<${right}>('all', 8, 'binary', ['unsigned', 'big'])`,
+      `}#`,
+    ].join("")
+  }
+
+  // True if the expression's type (declared or contextual) is a string.
+  // Used to route +, .length, indexed access through binary operations.
+  private isStringType(expr: ts.Expression): boolean {
+    if (!this.typeChecker) return false
+    const type = this.typeChecker.getTypeAtLocation(expr)
+    if (!type) return false
+    return (type.flags & ts.TypeFlags.StringLike) !== 0
+  }
+
   private indent(text: string, level: number): string {
     const pad = "\t".repeat(level)
     return text
@@ -556,6 +922,7 @@ class Emitter {
 export function emitCoreErlang(
   sourceFile: ts.SourceFile,
   moduleName: string,
+  typeChecker: ts.TypeChecker | null = null,
 ): ModuleOutput {
-  return new Emitter().emitModule(sourceFile, moduleName)
+  return new Emitter().emitModule(sourceFile, moduleName, typeChecker)
 }

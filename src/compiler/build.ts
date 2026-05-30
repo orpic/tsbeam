@@ -23,16 +23,23 @@ export interface RunResult {
   status: number
 }
 
-function parseSourceFile(filePath: string): ts.SourceFile {
+interface ParsedSource {
+  sourceFile: ts.SourceFile
+  typeChecker: ts.TypeChecker
+}
+
+function parseSourceFile(filePath: string): ParsedSource {
   const program = ts.createProgram([filePath], {
     target: ts.ScriptTarget.ES2022,
     module: ts.ModuleKind.ES2022,
     strict: true,
     noEmit: true,
   })
-  const sf = program.getSourceFile(filePath)
-  if (!sf) throw new CompileError(`could not load source file: ${filePath}`)
-  return sf
+  const sourceFile = program.getSourceFile(filePath)
+  if (!sourceFile) {
+    throw new CompileError(`could not load source file: ${filePath}`)
+  }
+  return { sourceFile, typeChecker: program.getTypeChecker() }
 }
 
 export function build(tsPath: string, opts: BuildOptions = {}): BuildResult {
@@ -45,9 +52,9 @@ export function build(tsPath: string, opts: BuildOptions = {}): BuildResult {
   const outDir = path.resolve(opts.outDir ?? path.join(process.cwd(), "build"))
   fs.mkdirSync(outDir, { recursive: true })
 
-  const sourceFile = parseSourceFile(absolute)
+  const { sourceFile, typeChecker } = parseSourceFile(absolute)
   const lowered = lower(sourceFile)
-  const { source } = emitCoreErlang(lowered, moduleName)
+  const { source } = emitCoreErlang(lowered, moduleName, typeChecker)
 
   const corePath = path.join(outDir, `${moduleName}.core`)
   fs.writeFileSync(corePath, source, "utf8")
