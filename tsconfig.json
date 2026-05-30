@@ -13,6 +13,13 @@
     "declaration": false,
     "sourceMap": true
   },
-  "include": ["src/**/*", "tests/run.ts"],
-  "exclude": ["node_modules", "dist", "tests/cases", "build"]
+  "include": ["src/**/*", "tests/run.ts", "tests/runFixture.ts"],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "build",
+    "tests/cases",
+    "tests/rejected",
+    "tests/meta"
+  ]
 }
