@@ -38,6 +38,13 @@ console.log(add(1, 2))   // 3, computed on BEAM
 - Array methods: `.map`, `.filter`, `.reduce`, `.forEach`, `.indexOf`
 - Arrow functions (`(x) => x * 2`) with lexical capture
 - `typeof x` — returns `"number"`, `"string"`, `"boolean"`, or `"object"`
+- Object literals (`{a: 1, b: 2}`) — compile to BEAM maps
+- Object spread `{...obj, a: 99}` and shorthand `{a, b}`
+- Property access `obj.field` — `maps:get` for anonymous, `element/N` for record-typed
+- `interface` declarations — interface-typed objects compile to BEAM records (O(1) field access)
+- `Map<K,V>` and `Set<T>` constructors with array-of-pairs / array-of-values init
+- Map/Set methods: `.get`, `.has`, `.delete`, `.size`
+- Strings as BEAM binaries — O(1) `s.length`, O(1) `s[i]`, O(n+m) `s + t`
 - Local function calls (including passing functions by name to `.map(f)` etc.)
 - `console.log(...)` → `io:format/2`
 
@@ -48,13 +55,15 @@ These compile-time errors enforce idiomatic immutable style:
 - `arr.push(x)`, `.pop()`, `.shift()`, `.unshift(x)` — use array spread
   (`[...arr, x]`) when it lands
 - `arr[i] = x` — same reason
+- `map.set(k, v)`, `set.add(x)` — use spread (`{...m, [k]: v}`) or build
+  from an iterable
 
 ### Not yet
 
 - Array spread (`[...a, ...b]`), rest parameters
 - More array methods (`.find`, `.some`, `.every`, `.slice`, `.includes`, etc.)
-- Objects / interfaces
-- `Map<K,V>`, `Set<T>`
+- More string methods (`.slice`, `.toUpperCase`, etc.)
+- Template literals (`` `hello ${name}` ``)
 - Loops, `break`, `continue`
 - `try`/`catch`/`throw`
 - Concurrency, OTP
