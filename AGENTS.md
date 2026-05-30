@@ -143,6 +143,112 @@ the user**. Don't quietly change the principle.
 
 ---
 
+## How to open a design conversation
+
+When you're about to bring a multi-option design question to the user
+(any new feature, new construct, new pipeline stage, anything in the
+"ask before doing" list), follow this script. The user is the
+architect; you're the engineer. Make a specific proposal, name what
+you're giving up, and invite pushback on the load-bearing assumption.
+
+### The script
+
+1. **Read first.** Read `plans/<related-area>/discussion_*.md` and
+   `plan_*.md`. Read the design principle above and the "what's
+   currently rejected" section below. Read recent commits in the
+   relevant area. Most of the time some options drop out immediately
+   because they violate the principle or contradict prior decisions —
+   that's the point of having those documents.
+
+2. **Pre-filter.** Apply the principle and the prior decisions to the
+   option space. Options that conflict with either are **ruled out
+   silently** — don't present them as live options in the discussion.
+   You can mention them in a one-liner "options ruled out: X (violates
+   complexity-contract), Y (contradicts plans/foo decision)" but they
+   don't take up airtime.
+
+3. **Recommend one direction.** Of the surviving options, commit to
+   one. Write 2-4 sentences explaining why it follows from the
+   principles. Be specific — name the BEAM primitive it lowers to, the
+   TS surface syntax, the user-visible behavior.
+
+4. **Name what you're giving up.** Briefly list what the
+   recommendation rules out (other surviving options, future
+   extensibility, etc.) so the user knows the cost.
+
+5. **Surface ONE genuinely-open question.** Pick the single
+   load-bearing assumption your recommendation depends on. If that
+   assumption is wrong, the whole recommendation flips. Ask the user
+   to pressure-test specifically that point. Not five questions; one.
+
+6. **Be explicit about your uncertainty.** Format like "the
+   load-bearing assumption is X. If X is wrong (e.g., you actually
+   want Y), the recommendation flips to Z." The user can quickly
+   confirm or redirect.
+
+### What this is NOT
+
+- ❌ A neutral menu: "Option A, Option B, Option C, Option D — which
+  resonates?" That's not facilitation; it's outsourcing the design
+  work back to the user. If you're tempted to format like this, you
+  haven't done step 1 (read first) and step 2 (pre-filter) yet.
+
+- ❌ False humility: "I'm not sure but maybe X." If you've read the
+  prior work and applied the principles, you almost certainly have a
+  view. Have it. Be explicit about where you're uncertain (step 6),
+  not vague about the whole proposal.
+
+- ❌ Confident-but-shallow: a recommendation that doesn't ground in the
+  principles, prior decisions, or BEAM/TS specifics. If you can't
+  point at the "why" from existing constraints, you haven't earned the
+  recommendation.
+
+### When the principles genuinely don't decide
+
+Rare, but real. Examples: a decision that changes the principles
+themselves (we had this for the Phase 2 complexity-contract
+conversation), a tradeoff where two principles point in different
+directions, an architectural choice with no prior context.
+
+In that case, **say so explicitly**: "The principles don't decide
+between X and Y because [reason]. Here's the tradeoff..." and then
+ask the user. The neutral-menu format is appropriate ONLY here, where
+the user genuinely is the only person who can pick.
+
+### Worked example: how Phase 3 would open
+
+Bad opening (what to avoid):
+
+> Phase 3 has four options: A) async/await mapped to processes,
+> B) explicit process API, C) actor classes, D) hybrid. Which feels
+> right for TSBeam's identity?
+
+Good opening (what to do):
+
+> Phase 3 step 1 should be **`async`/`await` lowering each call to a
+> fresh BEAM process**, with `await` becoming a `receive`. This
+> follows from the principle: TS programmers expect `async` to give
+> them concurrency without learning a new model, and BEAM gives us
+> "millions of processes" for free — that's the positive shock we
+> advertise.
+>
+> Ruled out by principle: requiring users to learn `spawn`/`send`/
+> `receive` to write concurrent TS (negative shock; idiomatic TS uses
+> `async`). Ruled out by current scope: actor/GenServer classes
+> (need classes first; Phase 4 work).
+>
+> The load-bearing assumption: each `async` call spawning a real BEAM
+> process is right. The alternatives are coroutines-in-one-process
+> (lighter, loses parallelism) or CPS-on-a-scheduler (reinvents what
+> BEAM does badly). I think process-per-call is correct, but if you'd
+> rather match Node's exact single-threaded async semantics, that
+> flips the design entirely. Where do you want to land?
+
+The second version takes the same amount of reading time but does the
+design work the user is paying you to do.
+
+---
+
 ## Hard rules
 
 These have surfaced enough times to warrant explicit calling-out. Most
@@ -359,8 +465,114 @@ Don't name fixtures `hello.ts`, `test1.ts`, `example.ts`,
 `myprogram.ts`. When the suite fails, the fixture name should tell you
 which feature regressed.
 
-One feature per fixture. If you need to test two features together,
-that's a `combo_` fixture.
+One feature per single-feature fixture. If you need to test two
+features together, that's a `combo_` fixture.
+
+### Combination coverage — the full interaction matrix
+
+**TSBeam is being built for real-world complex TypeScript backend
+code, not toy programs.** Real backends use features in combination:
+`async` functions that return objects, arrays of promises, recursive
+functions that handle interface-typed values, closures that capture
+strings, generic methods that work over any element type, and so on.
+Bugs live in those interactions, not in features used alone.
+
+So the rule is stronger than "add a combo fixture":
+
+**For every new construct, add combination fixtures pairing it with
+every existing feature it could plausibly interact with — not just
+one, the whole matrix.**
+
+When adding a new construct (call it `X`), enumerate the existing
+features it touches at the language level:
+
+- Does `X` produce values? → combo with arrays-of-X, objects with X
+  fields, maps/sets keyed/valued by X, X passed as function arg,
+  returned from functions, captured by arrows, awaited if relevant.
+- Does `X` accept values? → combo with each value-producing construct
+  flowing in.
+- Does `X` introduce control flow? → combo with `if/else`, early
+  return, recursion, existing lowering passes.
+- Does `X` introduce a new type? → combo with interfaces declaring
+  fields of that type, generic-shaped containers holding it.
+- Does `X` have a TS-side surface other constructs reference (e.g.
+  `await` referenced from inside an arrow body)? → combo with each
+  such referencing construct.
+
+The matrix is finite per new feature, usually 5-15 combos. If a combo
+isn't plausibly real-world code, skip it. If you can imagine a
+backend developer writing it, **include it.**
+
+**Document the matrix you considered in the plan.** Each plan's test
+case section should list the combination axes you enumerated, with a
+fixture name for each (or an explicit reason for skipping). Future
+agents doing similar work see the pattern and follow it.
+
+A combo fixture that surfaces a bug is the round's responsibility to
+fix — that's the "fix bugs in this round, no deferring" rule from the
+testing harness work (see `plans/testing/discussion_2026-05-30_1034.md`).
+
+#### Ownership: the agent who builds the feature owns the matrix
+
+The agent who introduces a new construct **writes the combination
+matrix as part of the same work**, not as a follow-up and not
+inherited by the next agent. The work is incomplete without it.
+
+This is non-negotiable. If you've added a new emitter branch, new
+lowering pass, or new test fixture for a single-feature win condition,
+and you're about to consider the work "done" before adding the combo
+matrix, **you're not done.** The combo matrix is part of the
+definition of done, not bonus polish.
+
+If a later auditor (you or another agent) finds combos missing from
+a previous round, the right response is: **ask the agent who built
+the feature to add them**, or if that's not possible (different
+session, different model), explicitly own the work as a follow-up
+under your name. Do NOT silently backfill — the rule only changes
+behavior if the agent who *should have written the combos* feels the
+gap.
+
+#### Definition of done for a new-feature plan
+
+A plan covering a new construct or feature is "done" only when ALL
+of these are true:
+
+1. Win-condition fixture(s) pass.
+2. The combination matrix is enumerated in the plan and the relevant
+   combos are written as fixtures, with baselines committed.
+3. Any combo fixture that surfaced a real bug is fixed in the same
+   round.
+4. README claims about the feature are demonstrated by at least one
+   fixture (see the next subsection).
+5. The plan's "Implementation notes" section is filled in with
+   surprises encountered during the work.
+6. `npm test` is green.
+
+If any of 1-6 is missing, the work is in progress, not done.
+
+### Documentation claims must be exercised by fixtures
+
+If a README, AGENTS, or CONTRIBUTING claim describes runtime behavior
+("X is O(1)", "Y runs in parallel", "Z preserves immutability"), at
+least one fixture must demonstrate it. Don't write marketing copy
+your fixtures can't support.
+
+Example: if README says "each async call spawns a real BEAM process,
+giving you true parallelism," there must be a fixture that exercises
+parallelism (e.g., two concurrent slow tasks completing faster than
+their sequential sum, or a `Promise.all`-style speedup demo). A
+fixture that *just calls* an async function and awaits it doesn't
+demonstrate parallelism — it demonstrates correctness of the
+async/await protocol. Both are valuable; only one matches the claim.
+
+If you write a claim and can't yet build the fixture, either:
+
+- Rephrase the claim to match what's actually tested (e.g., "async
+  calls compile to BEAM spawn; parallelism becomes observable with
+  `Promise.all` in step 3"), OR
+- Build the fixture first, then write the claim.
+
+Never the other way around.
 
 ---
 
@@ -506,13 +718,33 @@ anything future agents working in the same area should know.
 
 ## When in doubt
 
-Ask the human. The cost of pausing is low; the cost of an unwanted
-architectural change is high. Particularly:
+"Doubt" comes in two flavors with different responses:
 
-- Anything that touches the design principle.
-- Anything that changes the "currently rejected" list.
-- Anything that adds a top-level directory or dependency.
-- Anything that touches AGENTS.md, LICENSE, or `package.json` scripts.
+**Doubt about implementation** ("how does Core Erlang express this?",
+"what's the right slot index?"): resolve it yourself first. Hand-write
+the target shape in `local_sandbox/`, read the prior plans, grep the
+emitter for similar constructs. Most implementation doubt dissolves
+once you've done the sandbox-first dance.
+
+**Doubt about direction** ("which API surface should this expose?",
+"how should this feature interact with existing principles?"): apply
+the "How to open a design conversation" script above. The default is
+**recommend, don't survey**. Ask the user only when:
+
+- A decision touches the design principle itself.
+- A decision changes the "currently rejected" list.
+- Two principles point in genuinely different directions on the same
+  question.
+- The decision would add a top-level directory or runtime dependency.
+- The decision would touch AGENTS.md, LICENSE, or `package.json`
+  scripts.
+
+In all other cases, do the work: pre-filter against principles, form
+a recommendation, name what it rules out, surface one open question.
+The cost of pausing on every multi-option design is high — it pushes
+the design work onto the user. The cost of a confident-but-wrong
+recommendation is lower than it looks, because step 5 of the script
+explicitly invites pushback on the load-bearing assumption.
 
 If you find this file is missing something an agent should know, **flag
 it and propose the addition**. Don't edit silently.
