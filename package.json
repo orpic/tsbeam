@@ -11,7 +11,7 @@
     "build": "tsc",
     "tsbeam": "tsc && node dist/src/cli/index.js",
     "test": "tsc && node dist/tests/run.js",
-    "test:update": "tsc && node dist/tests/run.js --update"
+    "update-baseline": "tsc && node dist/tests/run.js --update"
   },
   "devDependencies": {
     "typescript": "^5.6.0",
