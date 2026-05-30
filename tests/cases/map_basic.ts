@@ -1,0 +1,6 @@
+const counts = new Map<string, number>([["a", 1], ["b", 2], ["c", 3]])
+console.log(counts.get("a"))
+console.log(counts.get("b"))
+console.log(counts.has("c"))
+console.log(counts.has("d"))
+console.log(counts.size)
