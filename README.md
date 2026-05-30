@@ -35,12 +35,23 @@ console.log(add(1, 2))   // 3, computed on BEAM
 - Numeric and string literals, booleans
 - Arrays (`Array<T>` / `T[]`) — compile to BEAM tuples, O(1) read and `.length`
 - Indexed access (`arr[i]`)
+- Array methods: `.map`, `.filter`, `.reduce`, `.forEach`, `.indexOf`
+- Arrow functions (`(x) => x * 2`) with lexical capture
 - Local function calls
 - `console.log(...)` → `io:format/2`
 
+### Rejected with a helpful error
+
+These compile-time errors enforce idiomatic immutable style:
+
+- `arr.push(x)`, `.pop()`, `.shift()`, `.unshift(x)` — use array spread
+  (`[...arr, x]`) when it lands
+- `arr[i] = x` — same reason
+
 ### Not yet
 
-- Array methods (`.map`, `.filter`, `.push`, etc.)
+- Array spread (`[...a, ...b]`), rest parameters
+- More array methods (`.find`, `.some`, `.every`, `.slice`, `.includes`, etc.)
 - Objects / interfaces
 - `Map<K,V>`, `Set<T>`
 - Loops, `break`, `continue`

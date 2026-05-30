@@ -8,9 +8,18 @@ interface ModuleOutput {
 }
 
 class Emitter {
+  private moduleFunctions = new Set<string>()
+
   emitModule(sourceFile: ts.SourceFile, moduleName: string): ModuleOutput {
     const functions: Emitted[] = []
     const topLevelStatements: ts.Statement[] = []
+
+    this.moduleFunctions.clear()
+    for (const stmt of sourceFile.statements) {
+      if (ts.isFunctionDeclaration(stmt) && stmt.name) {
+        this.moduleFunctions.add(stmt.name.text)
+      }
+    }
 
     for (const stmt of sourceFile.statements) {
       if (ts.isFunctionDeclaration(stmt) && stmt.name) {
@@ -242,9 +251,20 @@ class Emitter {
     if (ts.isPropertyAccessExpression(expr)) {
       return this.emitPropertyAccess(expr)
     }
+    if (ts.isArrowFunction(expr)) {
+      return this.emitArrowFunction(expr)
+    }
     throw new Error(
       `unsupported expression: ${ts.SyntaxKind[expr.kind]}`,
     )
+  }
+
+  private emitArrowFunction(node: ts.ArrowFunction): string {
+    const params = node.parameters.map((p) => this.tsParamName(p))
+    const body = ts.isBlock(node.body)
+      ? this.emitBlock(node.body)
+      : this.emitExpression(node.body)
+    return `fun (${params.join(", ")}) -> ${body}`
   }
 
   private emitArrayLiteral(expr: ts.ArrayLiteralExpression): string {
@@ -297,6 +317,14 @@ class Emitter {
   }
 
   private emitBinary(expr: ts.BinaryExpression): string {
+    if (
+      expr.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isElementAccessExpression(expr.left)
+    ) {
+      throw new Error(
+        "arr[i] = x is not supported — TSBeam arrays are immutable. Build a new array with the change applied (array spread coming soon).",
+      )
+    }
     const op = this.binaryOpToErlang(expr.operatorToken.kind)
     const left = this.emitExpression(expr.left)
     const right = this.emitExpression(expr.right)
@@ -349,14 +377,116 @@ class Emitter {
       return `call 'io':'format'("~p~n", ${list})`
     }
 
-    // Local function: f(args) → apply 'f'/arity(args)
+    // x.method(...) — array methods or rejected mutators
+    if (ts.isPropertyAccessExpression(expr.expression)) {
+      return this.emitMethodCall(expr, expr.expression)
+    }
+
+    // f(args) — call by identifier
     if (ts.isIdentifier(expr.expression)) {
       const name = expr.expression.text
       const args = expr.arguments.map((a) => this.emitExpression(a))
-      return `apply '${name}'/${args.length}(${args.join(", ")})`
+      // Module-level FunctionDeclaration: apply 'name'/arity(args)
+      if (this.moduleFunctions.has(name)) {
+        return `apply '${name}'/${args.length}(${args.join(", ")})`
+      }
+      // Otherwise: a let-bound fun value (arrow, captured fun, etc).
+      // Apply the value directly: apply _name(args).
+      const coreName = this.tsIdentifierToCore(name)
+      return `apply ${coreName}(${args.join(", ")})`
     }
 
     throw new Error("unsupported call expression")
+  }
+
+  private emitMethodCall(
+    callExpr: ts.CallExpression,
+    propAccess: ts.PropertyAccessExpression,
+  ): string {
+    const methodName = propAccess.name.text
+    const receiver = this.emitExpression(propAccess.expression)
+    const args = callExpr.arguments
+
+    // Rejected mutators — fail with a helpful error
+    const mutatorMessages: Record<string, string> = {
+      push:
+        "arr.push(x) is not supported — TSBeam arrays are immutable. Use [...arr, x] to build a new array (array spread coming soon).",
+      pop:
+        "arr.pop() is not supported — TSBeam arrays are immutable. Build a new array without the last element (spread support coming soon).",
+      shift:
+        "arr.shift() is not supported — TSBeam arrays are immutable. Build a new array without the first element (spread support coming soon).",
+      unshift:
+        "arr.unshift(x) is not supported — TSBeam arrays are immutable. Use [x, ...arr] (array spread coming soon).",
+    }
+    if (methodName in mutatorMessages) {
+      throw new Error(mutatorMessages[methodName])
+    }
+
+    switch (methodName) {
+      case "map":
+      case "filter":
+      case "forEach": {
+        if (args.length !== 1) {
+          throw new Error(
+            `arr.${methodName} expects exactly 1 argument (the callback); got ${args.length}`,
+          )
+        }
+        const callback = this.emitExpression(args[0])
+        const listsFn =
+          methodName === "map"
+            ? "map"
+            : methodName === "filter"
+              ? "filter"
+              : "foreach"
+        const inner = `call 'lists':'${listsFn}'(${callback}, call 'erlang':'tuple_to_list'(${receiver}))`
+        if (methodName === "forEach") return inner
+        return `call 'erlang':'list_to_tuple'(${inner})`
+      }
+      case "reduce": {
+        if (args.length !== 2) {
+          throw new Error(
+            "arr.reduce requires both a callback and an initial value (e.g. arr.reduce(f, 0)); the one-argument form is not supported",
+          )
+        }
+        const callback = this.emitExpression(args[0])
+        const init = this.emitExpression(args[1])
+        return `call 'lists':'foldl'(${callback}, ${init}, call 'erlang':'tuple_to_list'(${receiver}))`
+      }
+      case "indexOf": {
+        if (args.length !== 1) {
+          throw new Error(
+            `arr.indexOf expects exactly 1 argument (the target); got ${args.length}`,
+          )
+        }
+        const target = this.emitExpression(args[0])
+        return this.emitIndexOf(receiver, target)
+      }
+    }
+
+    throw new Error(`unsupported method: .${methodName}`)
+  }
+
+  private emitIndexOf(receiver: string, target: string): string {
+    // Walk the list with a foldl. Accumulator is a tagged tuple:
+    // {'searching', I} until we hit the target; {'found', I} after.
+    // Result: the found index, or -1.
+    return [
+      `case call 'lists':'foldl'(`,
+      `       fun (_E, _Acc) ->`,
+      `         case _Acc of`,
+      `           {'found', _I} when 'true' -> _Acc`,
+      `           {'searching', _I} when 'true' ->`,
+      `             case call 'erlang':'=:='(_E, ${target}) of`,
+      `               'true' when 'true' -> {'found', _I}`,
+      `               'false' when 'true' -> {'searching', call 'erlang':'+'(_I, 1)}`,
+      `             end`,
+      `         end,`,
+      `       {'searching', 0},`,
+      `       call 'erlang':'tuple_to_list'(${receiver})) of`,
+      `  {'found', _I} when 'true' -> _I`,
+      `  {'searching', _} when 'true' -> call 'erlang':'-'(1)`,
+      `end`,
+    ].join("\n")
   }
 
   private toCoreList(items: string[]): string {
