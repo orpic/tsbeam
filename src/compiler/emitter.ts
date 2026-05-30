@@ -9,7 +9,10 @@ interface ModuleOutput {
 }
 
 class Emitter {
-  private moduleFunctions = new Set<string>()
+  // name → arity for every module-level function. Used by emitCall to
+  // dispatch `apply 'name'/arity(...)` and by emitExpression to emit
+  // `fun 'name'/arity` when the name is referenced as a value.
+  private moduleFunctions = new Map<string, number>()
 
   emitModule(sourceFile: ts.SourceFile, moduleName: string): ModuleOutput {
     const functions: Emitted[] = []
@@ -18,7 +21,7 @@ class Emitter {
     this.moduleFunctions.clear()
     for (const stmt of sourceFile.statements) {
       if (ts.isFunctionDeclaration(stmt) && stmt.name) {
-        this.moduleFunctions.add(stmt.name.text)
+        this.moduleFunctions.set(stmt.name.text, stmt.parameters.length)
       }
     }
 
@@ -229,7 +232,15 @@ class Emitter {
     if (expr.kind === ts.SyntaxKind.TrueKeyword) return "'true'"
     if (expr.kind === ts.SyntaxKind.FalseKeyword) return "'false'"
     if (ts.isIdentifier(expr)) {
-      return this.tsIdentifierToCore(expr.text)
+      const name = expr.text
+      // When a module-level function name is referenced as a *value* (e.g.
+      // passed to `.map(double)`), emit a fname reference. Calls to module
+      // functions take the `apply 'name'/arity(args)` path in emitCall.
+      const arity = this.moduleFunctions.get(name)
+      if (arity !== undefined) {
+        return `'${name}'/${arity}`
+      }
+      return this.tsIdentifierToCore(name)
     }
     if (ts.isBinaryExpression(expr)) {
       return this.emitBinary(expr)
@@ -255,9 +266,30 @@ class Emitter {
     if (ts.isArrowFunction(expr)) {
       return this.emitArrowFunction(expr)
     }
+    if (ts.isTypeOfExpression(expr)) {
+      return this.emitTypeOf(expr)
+    }
     throw new CompileError(
       `unsupported expression: ${ts.SyntaxKind[expr.kind]}`,
     )
+  }
+
+  // `typeof x` returns one of "number", "string", "boolean", "object",
+  // matching TS semantics for our current language. Cases are runtime
+  // type-tag checks; the `_V when 'true' -> ...` fallback keeps the case
+  // total even when no type matches (e.g. atoms not yet covered).
+  private emitTypeOf(expr: ts.TypeOfExpression): string {
+    const operand = this.emitExpression(expr.expression)
+    return [
+      `case ${operand} of`,
+      `  _V when call 'erlang':'is_integer'(_V) -> "number"`,
+      `  _V when call 'erlang':'is_float'(_V) -> "number"`,
+      `  _V when call 'erlang':'is_boolean'(_V) -> "boolean"`,
+      `  _V when call 'erlang':'is_list'(_V) -> "string"`,
+      `  _V when call 'erlang':'is_tuple'(_V) -> "object"`,
+      `  _V when 'true' -> "object"`,
+      `end`,
+    ].join("\n")
   }
 
   private emitArrowFunction(node: ts.ArrowFunction): string {
