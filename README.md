@@ -46,6 +46,10 @@ console.log(add(1, 2))   // 3, computed on BEAM
 - Map/Set methods: `.get`, `.has`, `.delete`, `.size`
 - Strings as BEAM binaries — O(1) `s.length`, O(1) `s[i]`, O(n+m) `s + t`
 - Local function calls (including passing functions by name to `.map(f)` etc.)
+- `async` functions → each call compiles to a BEAM `spawn`; the body runs
+  in its own process and sends its result back
+- `await` → blocks the calling process via `receive` until the result
+  arrives (parallelism becomes observable with `Promise.all`, step 3)
 - `console.log(...)` → `io:format/2`
 
 ### Rejected with a helpful error
@@ -57,6 +61,8 @@ These compile-time errors enforce idiomatic immutable style:
 - `arr[i] = x` — same reason
 - `map.set(k, v)`, `set.add(x)` — use spread (`{...m, [k]: v}`) or build
   from an iterable
+- Unawaited async function calls — use `await fn(...)` (floating promises
+  rejected at compile time)
 
 ### Not yet
 
@@ -66,7 +72,10 @@ These compile-time errors enforce idiomatic immutable style:
 - Template literals (`` `hello ${name}` ``)
 - Loops, `break`, `continue`
 - `try`/`catch`/`throw`
-- Concurrency, OTP
+- Mid-body `await` inside async functions
+- `Promise.all` / `Promise.race`
+- Explicit process primitives (`spawn`/`send`/`receive`)
+- OTP (supervisors, GenServer)
 
 ## Quick start
 

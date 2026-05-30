@@ -19,9 +19,13 @@ class Emitter {
   // property access on interface-typed expressions becomes element/N.
   private interfaces = new Map<string, string[]>()
 
+  private asyncFunctions = new Set<string>()
+
   // Type checker for contextual / declared type queries. Optional; if
   // absent, we fall back to anonymous-map emission.
   private typeChecker: ts.TypeChecker | null = null
+
+  private freshVarCounter = 0
 
   emitModule(
     sourceFile: ts.SourceFile,
@@ -33,11 +37,20 @@ class Emitter {
 
     this.moduleFunctions.clear()
     this.interfaces.clear()
+    this.asyncFunctions.clear()
     this.typeChecker = typeChecker
+    this.freshVarCounter = 0
 
     for (const stmt of sourceFile.statements) {
       if (ts.isFunctionDeclaration(stmt) && stmt.name) {
         this.moduleFunctions.set(stmt.name.text, stmt.parameters.length)
+        if (
+          stmt.modifiers?.some(
+            (m) => m.kind === ts.SyntaxKind.AsyncKeyword,
+          )
+        ) {
+          this.asyncFunctions.add(stmt.name.text)
+        }
       }
       if (ts.isInterfaceDeclaration(stmt)) {
         const fields = stmt.members
@@ -121,8 +134,39 @@ class Emitter {
     const name = node.name!.text
     const params = node.parameters.map((p) => this.tsParamName(p))
     const arity = params.length
+
+    if (this.asyncFunctions.has(name)) {
+      return this.emitAsyncFunctionDeclaration(node, name, params, arity)
+    }
+
     const body = this.emitBlock(node.body!)
     return `'${name}'/${arity} =\n    fun (${params.join(", ")}) ->\n${this.indent(body, 1)}`
+  }
+
+  private emitAsyncFunctionDeclaration(
+    node: ts.FunctionDeclaration,
+    name: string,
+    params: string[],
+    arity: number,
+  ): Emitted {
+    const callerVar = this.freshName("caller")
+    const refVar = this.freshName("ref")
+    const funVar = this.freshName("fun")
+    const resultVar = this.freshName("result")
+
+    const body = this.emitBlock(node.body!)
+
+    const inner = [
+      `let <${callerVar}> = call 'erlang':'self'()`,
+      `in let <${refVar}> = call 'erlang':'make_ref'()`,
+      `in let <${funVar}> = fun () ->`,
+      `    let <${resultVar}> = ${body}`,
+      `    in call 'erlang':'!'(${callerVar}, {${refVar}, ${resultVar}})`,
+      `in do call 'erlang':'spawn'(${funVar})`,
+      `   {${refVar}}`,
+    ].join("\n")
+
+    return `'${name}'/${arity} =\n    fun (${params.join(", ")}) ->\n${this.indent(inner, 1)}`
   }
 
   private emitMain(stmts: ts.Statement[]): Emitted | null {
@@ -306,6 +350,9 @@ class Emitter {
     if (ts.isNewExpression(expr)) {
       return this.emitNewExpression(expr)
     }
+    if (ts.isAwaitExpression(expr)) {
+      return this.emitAwaitExpression(expr)
+    }
     throw new CompileError(
       `unsupported expression: ${ts.SyntaxKind[expr.kind]}`,
     )
@@ -320,10 +367,24 @@ class Emitter {
       this.typeChecker.getContextualType(expr) ??
       this.typeChecker.getTypeAtLocation(expr)
     if (!type) return null
+    return this.interfaceNameOfType(type)
+  }
+
+  // An async function returning Promise<User> gives a return expression the
+  // contextual type `User | Promise<User>`. Scan union members so the
+  // object literal still lowers to a record.
+  private interfaceNameOfType(type: ts.Type): string | null {
     const symbol = type.aliasSymbol ?? type.symbol
-    if (!symbol) return null
-    const name = symbol.name
-    return this.interfaces.has(name) ? name : null
+    if (symbol && this.interfaces.has(symbol.name)) {
+      return symbol.name
+    }
+    if (type.isUnion()) {
+      for (const member of type.types) {
+        const name = this.interfaceNameOfType(member)
+        if (name !== null) return name
+      }
+    }
+    return null
   }
 
   // Lowercase tag matching standard Erlang record convention. Two interfaces
@@ -548,6 +609,24 @@ class Emitter {
     ].join("\n")
   }
 
+  private emitAwaitExpression(expr: ts.AwaitExpression): string {
+    const operand = this.emitExpression(expr.expression)
+
+    const promiseVar = this.freshName("promise")
+    const refVar = this.freshName("ref")
+    const matchVar = this.freshName("awaitRef")
+    const valVar = this.freshName("val")
+
+    return [
+      `let <${promiseVar}> = ${operand}`,
+      `in let <${refVar}> = call 'erlang':'element'(1, ${promiseVar})`,
+      `in receive`,
+      `    <{${matchVar}, ${valVar}}> when call 'erlang':'=:='(${matchVar}, ${refVar}) ->`,
+      `\t${valVar}`,
+      `after 'infinity' -> 'error'`,
+    ].join("\n")
+  }
+
   private emitArrowFunction(node: ts.ArrowFunction): string {
     const params = node.parameters.map((p) => this.tsParamName(p))
     const body = ts.isBlock(node.body)
@@ -715,6 +794,14 @@ class Emitter {
       const args = expr.arguments.map((a) => this.emitExpression(a))
       // Module-level FunctionDeclaration: apply 'name'/arity(args)
       if (this.moduleFunctions.has(name)) {
+        if (
+          this.asyncFunctions.has(name) &&
+          !ts.isAwaitExpression(expr.parent)
+        ) {
+          throw new CompileError(
+            `async function '${name}' must be awaited — use: const result = await ${name}(...)`,
+          )
+        }
         return `apply '${name}'/${args.length}(${args.join(", ")})`
       }
       // Otherwise: a let-bound fun value (arrow, captured fun, etc).
@@ -868,6 +955,10 @@ class Emitter {
     // Core Erlang variables must start with uppercase or _.
     // We prefix with _ to mirror typical compiler output and avoid clashes.
     return `_${name}`
+  }
+
+  private freshName(base: string): string {
+    return `__${base}_${this.freshVarCounter++}`
   }
 
   // Emit a string literal as a BEAM binary using Core Erlang's verbose
