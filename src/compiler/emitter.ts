@@ -1,4 +1,5 @@
 import * as ts from "typescript"
+import { CompileError } from "./errors.js"
 
 type Emitted = string
 
@@ -138,10 +139,10 @@ class Emitter {
 
     const [decl, ...moreDecls] = decls
     if (!ts.isIdentifier(decl.name)) {
-      throw new Error("only simple identifier bindings are supported")
+      throw new CompileError("only simple identifier bindings are supported")
     }
     if (!decl.initializer) {
-      throw new Error(
+      throw new CompileError(
         `binding '${decl.name.text}' must have an initializer`,
       )
     }
@@ -165,7 +166,7 @@ class Emitter {
     if (ts.isBlock(stmt)) {
       return this.emitBlock(stmt)
     }
-    throw new Error(
+    throw new CompileError(
       `unsupported terminal statement: ${ts.SyntaxKind[stmt.kind]}`,
     )
   }
@@ -175,7 +176,7 @@ class Emitter {
     if (ts.isReturnStatement(stmt)) {
       // A `return` mid-block can't be expressed in pure Core Erlang without
       // CPS. Until we need it, treat it as terminal — anything after is dead.
-      throw new Error(
+      throw new CompileError(
         "`return` is only supported as the last statement of a block",
       )
     }
@@ -188,7 +189,7 @@ class Emitter {
     if (ts.isBlock(stmt)) {
       return this.emitBlock(stmt)
     }
-    throw new Error(
+    throw new CompileError(
       `unsupported statement: ${ts.SyntaxKind[stmt.kind]}`,
     )
   }
@@ -254,7 +255,7 @@ class Emitter {
     if (ts.isArrowFunction(expr)) {
       return this.emitArrowFunction(expr)
     }
-    throw new Error(
+    throw new CompileError(
       `unsupported expression: ${ts.SyntaxKind[expr.kind]}`,
     )
   }
@@ -295,7 +296,7 @@ class Emitter {
       const target = this.emitExpression(expr.expression)
       return `call 'erlang':'tuple_size'(${target})`
     }
-    throw new Error(
+    throw new CompileError(
       `unsupported property access: .${name}`,
     )
   }
@@ -310,7 +311,7 @@ class Emitter {
       case ts.SyntaxKind.ExclamationToken:
         return `call 'erlang':'not'(${operand})`
       default:
-        throw new Error(
+        throw new CompileError(
           `unsupported unary operator: ${ts.SyntaxKind[expr.operator]}`,
         )
     }
@@ -321,7 +322,7 @@ class Emitter {
       expr.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
       ts.isElementAccessExpression(expr.left)
     ) {
-      throw new Error(
+      throw new CompileError(
         "arr[i] = x is not supported — TSBeam arrays are immutable. Build a new array with the change applied (array spread coming soon).",
       )
     }
@@ -358,7 +359,7 @@ class Emitter {
       case ts.SyntaxKind.GreaterThanEqualsToken:
         return ">="
       default:
-        throw new Error(
+        throw new CompileError(
           `unsupported binary operator: ${ts.SyntaxKind[kind]}`,
         )
     }
@@ -396,7 +397,7 @@ class Emitter {
       return `apply ${coreName}(${args.join(", ")})`
     }
 
-    throw new Error("unsupported call expression")
+    throw new CompileError("unsupported call expression")
   }
 
   private emitMethodCall(
@@ -419,7 +420,7 @@ class Emitter {
         "arr.unshift(x) is not supported — TSBeam arrays are immutable. Use [x, ...arr] (array spread coming soon).",
     }
     if (methodName in mutatorMessages) {
-      throw new Error(mutatorMessages[methodName])
+      throw new CompileError(mutatorMessages[methodName])
     }
 
     switch (methodName) {
@@ -427,7 +428,7 @@ class Emitter {
       case "filter":
       case "forEach": {
         if (args.length !== 1) {
-          throw new Error(
+          throw new CompileError(
             `arr.${methodName} expects exactly 1 argument (the callback); got ${args.length}`,
           )
         }
@@ -444,7 +445,7 @@ class Emitter {
       }
       case "reduce": {
         if (args.length !== 2) {
-          throw new Error(
+          throw new CompileError(
             "arr.reduce requires both a callback and an initial value (e.g. arr.reduce(f, 0)); the one-argument form is not supported",
           )
         }
@@ -454,7 +455,7 @@ class Emitter {
       }
       case "indexOf": {
         if (args.length !== 1) {
-          throw new Error(
+          throw new CompileError(
             `arr.indexOf expects exactly 1 argument (the target); got ${args.length}`,
           )
         }
@@ -463,7 +464,7 @@ class Emitter {
       }
     }
 
-    throw new Error(`unsupported method: .${methodName}`)
+    throw new CompileError(`unsupported method: .${methodName}`)
   }
 
   private emitIndexOf(receiver: string, target: string): string {
@@ -500,7 +501,7 @@ class Emitter {
 
   private tsParamName(p: ts.ParameterDeclaration): string {
     if (!ts.isIdentifier(p.name)) {
-      throw new Error("only simple identifier parameters are supported")
+      throw new CompileError("only simple identifier parameters are supported")
     }
     return this.tsIdentifierToCore(p.name.text)
   }

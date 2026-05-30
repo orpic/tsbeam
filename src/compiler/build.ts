@@ -4,6 +4,7 @@ import * as fs from "node:fs"
 import { spawnSync } from "node:child_process"
 import { emitCoreErlang } from "./emitter.js"
 import { lower } from "./lower/index.js"
+import { CompileError } from "./errors.js"
 
 export interface BuildOptions {
   outDir?: string
@@ -30,14 +31,14 @@ function parseSourceFile(filePath: string): ts.SourceFile {
     noEmit: true,
   })
   const sf = program.getSourceFile(filePath)
-  if (!sf) throw new Error(`could not load source file: ${filePath}`)
+  if (!sf) throw new CompileError(`could not load source file: ${filePath}`)
   return sf
 }
 
 export function build(tsPath: string, opts: BuildOptions = {}): BuildResult {
   const absolute = path.resolve(tsPath)
   if (!fs.existsSync(absolute)) {
-    throw new Error(`file not found: ${absolute}`)
+    throw new CompileError(`file not found: ${absolute}`)
   }
 
   const moduleName = path.basename(absolute, path.extname(absolute))
