@@ -28,7 +28,7 @@ write in.
 ```bash
 npm test                              # run the whole test suite
 npm test -- arithmetic                # run cases matching 'arithmetic'
-npm run test:update                   # regenerate baselines (snapshot update)
+npm run update-baseline               # regenerate baselines (snapshot update)
 npm run tsbeam -- run path/to/foo.ts  # compile + run on BEAM
 npm run tsbeam -- build path/to/foo.ts
 ```
@@ -101,23 +101,43 @@ Nothing in `local_sandbox/` is ever committed. Safe to delete at any time.
 Don't reference files in `local_sandbox/` from any committed code or docs
 — they may not exist in a fresh clone.
 
-## Test cases — naming and structure
+## Test fixtures — three kinds
 
-Each test is a pair:
+The harness recognises three fixture kinds, each in its own directory.
 
-- `tests/cases/<feature>.ts` — input program. End with `console.log(...)`
-  printing something distinguishing.
-- `tests/baselines/<feature>.out` — exact stdout the program should produce
-  on BEAM. Generated via `npm run test:update`, then inspected and committed.
+**Positive** (most common): `tests/cases/<name>.ts` + `tests/baselines/<name>.out`.
+The program compiles, runs on BEAM, produces the exact stdout in the
+baseline. Stderr must be empty.
 
-**Name cases after the feature being tested, not the program.**
+**Negative**: `tests/rejected/<name>.ts` + `tests/rejected/<name>.error`.
+The program must fail to compile with a `CompileError` containing the
+substring in the `.error` file. For rejection paths like `arr.push(x)`.
 
-- ✓ `arithmetic.ts`, `let_binding.ts`, `if_else.ts`, `string_concat.ts`,
-  `early_return.ts`
+**Meta**: `tests/meta/<name>.ts` + `tests/meta/<name>.out`. Harness
+self-check. Baseline is deliberately wrong; fixture passes when output
+does NOT match. Used to verify the mismatch-detection actually works.
+Don't add new meta fixtures casually — one is enough.
+
+The harness is an orchestrator + per-fixture worker. Each fixture runs
+in a separate Node process for state isolation (default, not opt-in).
+`npm test` runs everything; `npm test -- <filter>` runs a subset;
+`npm run update-baseline` regenerates positive baselines only — never
+touches `.error` or meta files.
+
+**Name fixtures after the feature being tested, not the program.**
+
+- ✓ `arithmetic.ts`, `let_binding.ts`, `if_else.ts`, `combo_recursion.ts`,
+  `push_rejected.ts`
 - ✗ `hello.ts`, `test1.ts`, `example.ts`, `myprogram.ts`
 
-One feature per file. Don't bundle multiple features into one case — when a
-test fails, the case name should tell you which feature regressed.
+One feature per fixture. Don't bundle multiple features into one case —
+when a test fails, the case name should tell you which feature regressed.
+
+When a `npm test` failure reflects an intentional behavior change:
+
+- Positive: run `npm run update-baseline` (regenerates the `.out` from
+  actual output). Inspect the diff before committing.
+- Negative: edit `tests/rejected/<name>.error` by hand. Never automated.
 
 ## Compiler architecture conventions
 
@@ -216,7 +236,7 @@ those decisions usually have context in `plans/` that you may not have.
 - Add type annotations to make existing code stricter.
 - Improve error messages.
 - Fix typos in docs or comments.
-- Update `tests/baselines/*.out` via `npm run test:update` after a deliberate
+- Update `tests/baselines/*.out` via `npm run update-baseline` after a deliberate
   change — but commit the new baseline in the same change as the code.
 
 ## When in doubt

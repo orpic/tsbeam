@@ -79,37 +79,63 @@ erl -noshell -eval 'beam_disasm:file("build/file.beam"), halt().'
 
 ## How the test suite works
 
-Each test is a pair of files:
+There are three kinds of test fixtures:
 
-- `tests/cases/<name>.ts` — the input program
-- `tests/baselines/<name>.out` — the exact stdout the compiled program should
-  produce on BEAM
+**Positive** (`tests/cases/<name>.ts` + `tests/baselines/<name>.out`) — the
+program must compile, run on BEAM, and produce the exact stdout in the
+baseline. Stderr must be empty.
 
-The runner ([tests/run.ts](tests/run.ts)):
+**Negative** (`tests/rejected/<name>.ts` + `tests/rejected/<name>.error`) —
+the program must fail to compile with a `CompileError` whose message
+contains the substring in the `.error` file. Matches the rejection paths
+that enforce TSBeam's idiomatic rules (e.g. `arr.push(x)` rejected; use
+`[...arr, x]`).
 
-1. Discovers every `*.ts` in `tests/cases/`.
-2. Compiles it through tsbeam into `tests/.build/<name>/` (isolated per case).
-3. Runs the resulting `.beam` on BEAM.
-4. Diffs captured stdout against `tests/baselines/<name>.out`.
+**Meta** (`tests/meta/<name>.ts` + `tests/meta/<name>.out`) — the harness's
+own self-check. The baseline is *deliberately wrong*; the harness PASSES
+the meta fixture when the output does NOT match. Verifies that the
+mismatch-detection logic actually works. Don't add new meta fixtures
+casually — one is enough.
 
-A test fails on missing baseline, output mismatch, or non-zero exit. The
-runner prints a unified diff on mismatch and exits non-zero if anything
-failed.
+The runner ([tests/run.ts](tests/run.ts)) is an orchestrator that spawns
+a separate `node dist/tests/runFixture.js` child process per fixture.
+**Process isolation is the default**, not opt-in: each fixture gets a
+fresh process with no shared compiler state. Catches cross-test leak
+bugs (we almost had one with `moduleFunctions` in the emitter).
 
-### Adding a test
+A test fails on: missing baseline, output mismatch, non-zero exit,
+unexpected stderr, wrong/missing CompileError for negative fixtures,
+matching baseline for meta fixtures.
+
+### Adding a positive test
 
 1. Add `tests/cases/my_feature.ts`. Keep it small — one feature per file. End
    with `console.log(...)` so it prints something distinguishing.
-2. Run `npm run test:update` to generate the baseline.
+2. Run `npm run update-baseline` to generate the baseline.
 3. Inspect the baseline. If it's what you expected, commit both files. If not,
    fix the code (or the emitter) and re-run.
 4. From then on, `npm test` will catch regressions in this case.
 
-### Naming cases
+### Adding a negative test
+
+1. Add `tests/rejected/my_rejection.ts` — the smallest program that
+   should trigger the rejection.
+2. Add `tests/rejected/my_rejection.error` containing a substring of the
+   expected `CompileError` message (one line, minimal).
+3. Run `npm test`. The fixture should pass (i.e., the rejection fires
+   with the expected message). If not, the rejection isn't firing or the
+   message changed — fix the emitter or update the substring.
+
+Negative `.error` files are **never auto-regenerated**. `npm run
+update-baseline` only touches positive baselines. If you intentionally
+change an error message, edit the `.error` file by hand.
+
+### Naming fixtures
 
 Name after the feature, not the program:
 
-- ✓ `arithmetic.ts`, `let_binding.ts`, `if_else.ts`, `string_concat.ts`
+- ✓ `arithmetic.ts`, `let_binding.ts`, `if_else.ts`, `combo_recursion.ts`,
+  `push_rejected.ts`
 - ✗ `hello.ts`, `test1.ts`, `example.ts`
 
 ## Working on the emitter

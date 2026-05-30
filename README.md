@@ -37,7 +37,8 @@ console.log(add(1, 2))   // 3, computed on BEAM
 - Indexed access (`arr[i]`)
 - Array methods: `.map`, `.filter`, `.reduce`, `.forEach`, `.indexOf`
 - Arrow functions (`(x) => x * 2`) with lexical capture
-- Local function calls
+- `typeof x` — returns `"number"`, `"string"`, `"boolean"`, or `"object"`
+- Local function calls (including passing functions by name to `.map(f)` etc.)
 - `console.log(...)` → `io:format/2`
 
 ### Rejected with a helpful error
